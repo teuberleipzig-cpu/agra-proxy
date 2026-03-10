@@ -15,24 +15,52 @@ app.use((req, res, next) => {
   next();
 });
 
+// Prüft ob eine URL ein brauchbares Foto ist (kein SVG, kein Logo)
+function isUsableImage(url) {
+  if (!url) return false;
+  if (url.endsWith('.svg')) return false;
+  if (url.toLowerCase().includes('logo')) return false;
+  return true;
+}
+
 // Scrape das Bild von einer Event-Unterseite
-// Sucht zuerst im tribe-events-event-image Block, dann og:image
 async function scrapeEventImage(eventUrl) {
   try {
     const res = await fetch(eventUrl, { timeout: 8000 });
     const html = await res.text();
 
-    // 1. Bild aus div.tribe-events-event-image > img
-    const blockMatch = html.match(/class="tribe-events-event-image"[^>]*>[\s\S]{0,300}?<img[^>]+src="([^"]+)"/);
-    if (blockMatch && blockMatch[1]) return blockMatch[1];
-
-    // 2. og:image Meta-Tag
+    // 1. og:image Meta-Tag (zuverlässigste Quelle, vom CMS gesetzt)
     const ogMatch = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/);
-    if (ogMatch && ogMatch[1]) return ogMatch[1];
+    if (ogMatch && isUsableImage(ogMatch[1])) return ogMatch[1];
 
-    // 3. wp-post-image
-    const wpMatch = html.match(/<img[^>]+class="[^"]*wp-post-image[^"]*"[^>]*src="([^"]+)"/);
-    if (wpMatch && wpMatch[1]) return wpMatch[1];
+    // og:image kann auch andersrum stehen
+    const ogMatch2 = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/);
+    if (ogMatch2 && isUsableImage(ogMatch2[1])) return ogMatch2[1];
+
+    // 2. Alle img-Tags im tribe-events-event-image Block
+    const blockMatch = html.match(/class="tribe-events-event-image"[^>]*>([\s\S]{0,800}?)<\/div>/);
+    if (blockMatch) {
+      const imgRe = /src="([^"]+)"/g;
+      let m;
+      while ((m = imgRe.exec(blockMatch[1])) !== null) {
+        if (isUsableImage(m[1])) return m[1];
+      }
+    }
+
+    // 3. wp-post-image Klasse
+    const wpRe = /<img[^>]+class="[^"]*wp-post-image[^"]*"[^>]*>/g;
+    let wpM;
+    while ((wpM = wpRe.exec(html)) !== null) {
+      const src = (wpM[0].match(/src="([^"]+)"/) || [])[1];
+      if (isUsableImage(src)) return src;
+    }
+
+    // 4. Beliebiges Bild aus wp-content/uploads als letzter Fallback
+    const uploadsRe = /src="(https:\/\/agramessepark\.de\/wp-content\/uploads\/[^"]+\.(jpg|jpeg|png|webp))"/gi;
+    let uM;
+    while ((uM = uploadsRe.exec(html)) !== null) {
+      if (isUsableImage(uM[1])) return uM[1];
+    }
 
     return null;
   } catch (err) {
@@ -57,7 +85,6 @@ app.get('/api/events', async (req, res) => {
     const data = await wpRes.json();
 
     if (data.events) {
-      // Alle Event-Unterseiten parallel scrapen für hochauflösende Bilder
       console.log(`Scraping images for ${data.events.length} events...`);
       const imageUrls = await Promise.all(
         data.events.map(e => scrapeEventImage(e.url))
