@@ -19,40 +19,35 @@ function isUsableImage(url) {
   if (!url) return false;
   if (url.endsWith('.svg')) return false;
   if (url.toLowerCase().includes('logo')) return false;
+  if (url.toLowerCase().includes('LO-agra')) return false;
   return true;
 }
 
+// Scrape nur das direkte Event-Bild – kein Fallback auf andere Seiteninhalte
 async function scrapeEventImage(eventUrl) {
   try {
     const res = await fetch(eventUrl, { timeout: 8000 });
     const html = await res.text();
 
-    // 1. Direkt im tribe-events-event-image div – das ist das offizielle Event-Bild
-    const blockMatch = html.match(/class="tribe-events-event-image"[^>]*>([\s\S]{0,800}?)<\/div>/);
+    // Nur im tribe-events-event-image Block suchen – das ist das offizielle Bild
+    const blockMatch = html.match(/class="tribe-events-event-image"[^>]*>([\s\S]{0,600}?)<\/div>/);
     if (blockMatch) {
-      const imgRe = /src="([^"]+)"/g;
-      let m;
-      while ((m = imgRe.exec(blockMatch[1])) !== null) {
-        if (isUsableImage(m[1])) return m[1];
+      // srcset enthält oft höher aufgelöste Versionen – größtes Bild nehmen
+      const srcsetMatch = blockMatch[1].match(/srcset="([^"]+)"/);
+      if (srcsetMatch) {
+        const sources = srcsetMatch[1].split(',').map(s => s.trim());
+        // Letzter Eintrag im srcset ist meist das größte Bild
+        for (let i = sources.length - 1; i >= 0; i--) {
+          const url = sources[i].split(' ')[0];
+          if (isUsableImage(url)) return url;
+        }
       }
+      // Fallback: src
+      const srcMatch = blockMatch[1].match(/src="([^"]+)"/);
+      if (srcMatch && isUsableImage(srcMatch[1])) return srcMatch[1];
     }
 
-    // 2. wp-post-image Klasse
-    const wpRe = /<img[^>]+class="[^"]*wp-post-image[^"]*"[^>]*>/g;
-    let wpM;
-    while ((wpM = wpRe.exec(html)) !== null) {
-      const src = (wpM[0].match(/src="([^"]+)"/) || [])[1];
-      if (isUsableImage(src)) return src;
-    }
-
-    // 3. Beliebiges upload-Bild als letzter Fallback
-    const uploadsRe = /src="(https:\/\/agramessepark\.de\/wp-content\/uploads\/[^"]+\.(jpg|jpeg|png|webp))"/gi;
-    let uM;
-    while ((uM = uploadsRe.exec(html)) !== null) {
-      if (isUsableImage(uM[1])) return uM[1];
-    }
-
-    return null;
+    return null; // Kein brauchbares Bild → Palette zeigen
   } catch (err) {
     console.error(`Scrape error for ${eventUrl}:`, err.message);
     return null;
@@ -87,7 +82,7 @@ app.get('/api/events', async (req, res) => {
           console.log(`✓ ${event.title}: ${imgUrl}`);
         } else {
           event.image = null;
-          console.log(`✗ ${event.title}: kein Bild`);
+          console.log(`✗ ${event.title}: kein Bild → Palette`);
         }
         return event;
       });
