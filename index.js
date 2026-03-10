@@ -15,7 +15,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Prüft ob eine URL ein brauchbares Foto ist (kein SVG, kein Logo)
 function isUsableImage(url) {
   if (!url) return false;
   if (url.endsWith('.svg')) return false;
@@ -23,21 +22,12 @@ function isUsableImage(url) {
   return true;
 }
 
-// Scrape das Bild von einer Event-Unterseite
 async function scrapeEventImage(eventUrl) {
   try {
     const res = await fetch(eventUrl, { timeout: 8000 });
     const html = await res.text();
 
-    // 1. og:image Meta-Tag (zuverlässigste Quelle, vom CMS gesetzt)
-    const ogMatch = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/);
-    if (ogMatch && isUsableImage(ogMatch[1])) return ogMatch[1];
-
-    // og:image kann auch andersrum stehen
-    const ogMatch2 = html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/);
-    if (ogMatch2 && isUsableImage(ogMatch2[1])) return ogMatch2[1];
-
-    // 2. Alle img-Tags im tribe-events-event-image Block
+    // 1. Direkt im tribe-events-event-image div – das ist das offizielle Event-Bild
     const blockMatch = html.match(/class="tribe-events-event-image"[^>]*>([\s\S]{0,800}?)<\/div>/);
     if (blockMatch) {
       const imgRe = /src="([^"]+)"/g;
@@ -47,7 +37,7 @@ async function scrapeEventImage(eventUrl) {
       }
     }
 
-    // 3. wp-post-image Klasse
+    // 2. wp-post-image Klasse
     const wpRe = /<img[^>]+class="[^"]*wp-post-image[^"]*"[^>]*>/g;
     let wpM;
     while ((wpM = wpRe.exec(html)) !== null) {
@@ -55,7 +45,7 @@ async function scrapeEventImage(eventUrl) {
       if (isUsableImage(src)) return src;
     }
 
-    // 4. Beliebiges Bild aus wp-content/uploads als letzter Fallback
+    // 3. Beliebiges upload-Bild als letzter Fallback
     const uploadsRe = /src="(https:\/\/agramessepark\.de\/wp-content\/uploads\/[^"]+\.(jpg|jpeg|png|webp))"/gi;
     let uM;
     while ((uM = uploadsRe.exec(html)) !== null) {
@@ -73,7 +63,6 @@ function proxyImg(url) {
   return `${PROXY_BASE}/api/image?url=${encodeURIComponent(url)}`;
 }
 
-// GET /api/events → Events mit Bildern von den Unterseiten
 app.get('/api/events', async (req, res) => {
   try {
     const params = new URLSearchParams(req.query).toString();
@@ -111,7 +100,6 @@ app.get('/api/events', async (req, res) => {
   }
 });
 
-// GET /api/image?url=... → Bild-Proxy mit CORS
 app.get('/api/image', async (req, res) => {
   const imageUrl = req.query.url;
   if (!imageUrl) return res.status(400).send('Missing url');
