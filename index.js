@@ -23,7 +23,6 @@ async function scrapeImages() {
     const html = await res.text();
     const map = {};
 
-    // Alle img-Tags mit featured-image Klasse finden
     const re = /<img[^>]+tribe-events-calendar-list__event-featured-image[^>]*>/g;
     let m;
     while ((m = re.exec(html)) !== null) {
@@ -73,12 +72,12 @@ function isDefaultLogo(url) {
 }
 
 // GET /api/events → Events + Bilder kombiniert
+// Bild-URLs werden zu /api/image?url=... umgeschrieben damit CORS kein Problem ist
 app.get('/api/events', async (req, res) => {
   try {
     const params = new URLSearchParams(req.query).toString();
     const url = params ? `${WP_BASE}?${params}` : WP_BASE;
 
-    // Parallel: API + Bilderscraping
     const [wpRes, imageMap] = await Promise.all([
       fetch(url, { headers: { 'Accept': 'application/json' }, timeout: 10000 }),
       scrapeImages(),
@@ -90,16 +89,24 @@ app.get('/api/events', async (req, res) => {
 
     const data = await wpRes.json();
 
-    // Bilder einsetzen wo Standard-Logo
     if (data.events) {
       data.events = data.events.map(event => {
         const apiImg = event.image?.url;
+        let imgUrl = apiImg;
+
         if (isDefaultLogo(apiImg)) {
-          const scraped = findImage(imageMap, event.title);
-          if (scraped) {
-            event.image = { url: scraped, sizes: { thumbnail: { url: scraped } } };
-          }
+          imgUrl = findImage(imageMap, event.title) || null;
         }
+
+        // Bild-URL durch Proxy leiten (löst CORS im Browser)
+        if (imgUrl) {
+          const proxied = `https://agra-proxy.onrender.com/api/image?url=${encodeURIComponent(imgUrl)}`;
+          event.image = {
+            url: proxied,
+            sizes: { thumbnail: { url: proxied } }
+          };
+        }
+
         return event;
       });
     }
@@ -108,6 +115,30 @@ app.get('/api/events', async (req, res) => {
   } catch (err) {
     console.error('Events fetch error:', err.message);
     res.status(502).json({ error: err.message });
+  }
+});
+
+// GET /api/image?url=... → Bild durchleiten mit CORS-Header
+app.get('/api/image', async (req, res) => {
+  const imageUrl = req.query.url;
+  if (!imageUrl) return res.status(400).send('Missing url parameter');
+
+  // Nur agramessepark.de Bilder erlauben
+  if (!imageUrl.startsWith('https://agramessepark.de/')) {
+    return res.status(403).send('Forbidden');
+  }
+
+  try {
+    const imgRes = await fetch(imageUrl, { timeout: 10000 });
+    if (!imgRes.ok) return res.status(imgRes.status).send('Image fetch failed');
+
+    const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    imgRes.body.pipe(res);
+  } catch (err) {
+    console.error('Image proxy error:', err.message);
+    res.status(502).send('Image proxy error');
   }
 });
 
